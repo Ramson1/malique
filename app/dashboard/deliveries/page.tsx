@@ -10,6 +10,7 @@ import {
   Phone,
   UserRoundCog,
   CheckCircle2,
+  XCircle,
   FileDown,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/dashboard-layout";
@@ -50,10 +51,11 @@ interface Rider {
   branchName: string;
 }
 
-const STATUS_META: Record<string, { label: string; tone: "amber" | "blue" | "green" }> = {
+const STATUS_META: Record<string, { label: string; tone: "amber" | "blue" | "green" | "red" }> = {
   pending: { label: "Pending", tone: "amber" },
   delivering: { label: "Delivering", tone: "blue" },
   delivered: { label: "Delivered", tone: "green" },
+  cancelled: { label: "Cancelled", tone: "red" },
 };
 
 function formatTime(dateStr: string): string {
@@ -140,6 +142,21 @@ export default function DeliveriesPage() {
       toast.success("Delivery marked as delivered");
     } catch {
       toast.error("Failed to update delivery status.");
+    }
+  }
+
+  // Soft cancel: the delivery flips to `returned` on the server (shown as
+  // "Cancelled"); the order and its history stay intact.
+  async function cancelDelivery(delivery: Delivery) {
+    if (!window.confirm(`Cancel delivery for ${delivery.orderNumber}? The rider will be stood down.`)) return;
+    try {
+      await api.patch(`/admin/deliveries/${delivery.id}/status`, { status: "cancelled" });
+      setDeliveries((prev) =>
+        prev.map((d) => (d.id === delivery.id ? { ...d, status: "cancelled" } : d)),
+      );
+      toast.success("Delivery cancelled");
+    } catch {
+      toast.error("Failed to cancel delivery.");
     }
   }
 
@@ -294,6 +311,16 @@ export default function DeliveriesPage() {
                           leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />}
                         >
                           Mark Delivered
+                        </Button>
+                      )}
+                      {(delivery.status === "pending" || delivery.status === "delivering") && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => cancelDelivery(delivery)}
+                          leftIcon={<XCircle className="w-3.5 h-3.5" />}
+                        >
+                          Cancel
                         </Button>
                       )}
                     </div>

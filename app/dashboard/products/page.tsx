@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Plus, PencilLine, Package, Tags } from "lucide-react";
+import { Plus, PencilLine, Package, Tags, ClipboardCheck } from "lucide-react";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import {
   Card,
@@ -40,6 +40,74 @@ interface Branch {
 
 type PriceEntry = { sizeKg: number; price: string };
 
+// A secretary-submitted change awaiting admin review (GET /product-changes/pending).
+interface ChangeRequest {
+  id: string;
+  type: string; // create | edit | price
+  productId: string | null;
+  productName: string | null;
+  requestedBy: string | null;
+  createdAt: string;
+  proposal: Record<string, any>;
+  current: Record<string, any> | null;
+}
+
+const REQUEST_TYPE_LABELS: Record<string, string> = {
+  create: "New product",
+  edit: "Product edit",
+  price: "Price change",
+};
+
+// Accepts UI tokens ("cylinder-refill") and raw DB enums ("refill") — queued
+// `current` snapshots use the UI tokens, stale/other payloads may not.
+function catLabel(value?: string): string {
+  if (!value) return "—";
+  return (
+    CATEGORY_LABELS[value] ??
+    CATEGORY_LABELS[value.replace(/_/g, "-")] ??
+    value
+  );
+}
+
+function requestRows(r: ChangeRequest): { label: string; from: string; to: string }[] {
+  const cur = r.current ?? {};
+  const p = r.proposal ?? {};
+  if (r.type === "price") {
+    const entries = Array.isArray(p.entries) ? p.entries : [];
+    const rows = entries.map((en: any) => ({
+      label: `${Number(en.sizeKg) === 0 ? "Flat" : `${Number(en.sizeKg)}kg`} price`,
+      from: cur.price !== undefined ? formatCurrency(Number(cur.price)) : "—",
+      to: formatCurrency(Number(en.price)),
+    }));
+    rows.push({
+      label: "Scope",
+      from: "—",
+      to: p.allBranches ? "All branches" : "One branch",
+    });
+    return rows;
+  }
+  const rows: { label: string; from: string; to: string }[] = [];
+  if (p.name !== undefined)
+    rows.push({ label: "Name", from: String(cur.name ?? "—"), to: String(p.name) });
+  if (p.category !== undefined)
+    rows.push({ label: "Category", from: catLabel(cur.category), to: catLabel(p.category) });
+  if (p.price !== undefined)
+    rows.push({
+      label: "Price",
+      from: cur.price !== undefined ? formatCurrency(Number(cur.price)) : "—",
+      to: formatCurrency(Number(p.price)),
+    });
+  if (p.weight !== undefined)
+    rows.push({
+      label: "Size (kg)",
+      from: cur.weight !== undefined && cur.weight !== null ? `${cur.weight}kg` : "—",
+      to: `${p.weight}kg`,
+    });
+  if (p.description !== undefined)
+    rows.push({ label: "Description", from: String(cur.description ?? "—"), to: String(p.description) });
+  return rows;
+}
+
 const CATEGORY_LABELS: Record<string, string> = {
   "cylinder-refill": "Cylinder Refill",
   "new-cylinder": "New Cylinder",
@@ -73,6 +141,7 @@ const emptyForm: FormState = {
 export default function ProductsPage() {
   const toast = useToast();
   const [products, setProducts] = useState<Product[]>([]);
+  const [pendingProductIds, setPendingProductIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<Record<string, string>>({
     search: "",
@@ -82,8 +151,16 @@ export default function ProductsPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   // Mirrors @Roles('super_admin','admin','branch_manager') on the product BFF writes.
   const canManage = useCan("super_admin", "admin", "branch_manager");
+  // Mirrors @Roles('super_admin','admin') on the approval review endpoints.
+  const canApprove = useCan("super_admin", "admin");
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
+
+  // Approval queue state (secretary-submitted product changes).
+  const [pendingRequests, setPendingRequests] = useState<ChangeRequest[]>([]);
+  const [reviewing, setReviewing] = useState<ChangeRequest | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   // Global price control modal state.
   const [showPrices, setShowPrices] = useState(false);
@@ -96,8 +173,12 @@ export default function ProductsPage() {
   useEffect(() => {
     async function fetchProducts() {
       try {
-        const data = await api.get<{ products: Product[] }>("/admin/products");
+        const data = await api.get<{
+          products: Product[];
+          pendingProductIds?: string[];
+        }>("/admin/products");
         setProducts(data.products ?? []);
+        setPendingProductIds(data.pendingProductIds ?? []);
       } catch {
         toast.error("Could not load products. Please retry.");
       } finally {
@@ -107,6 +188,25 @@ export default function ProductsPage() {
     fetchProducts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const loadPending = useMemo(
+    () => async () => {
+      try {
+        const data = await api.get<{ requests: ChangeRequest[] }>(
+          "/product-changes/pending",
+        );
+        setPendingRequests(data.requests ?? []);
+      } catch {
+        // Queue is non-critical for the grid view; stay silent and retry
+        // whenever the page or an action refetches.
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (canApprove) loadPending();
+  }, [canApprove, loadPending]);
 
   function setFilter(key: string, value: string) {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -179,6 +279,59 @@ export default function ProductsPage() {
       toast.error("Failed to save product. Please check the details.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  function openReview(req: ChangeRequest) {
+    setReviewing(req);
+    setRejectReason("");
+  }
+
+  async function handleApprove() {
+    if (!reviewing) return;
+    setReviewBusy(true);
+    try {
+      await api.post(`/product-changes/${reviewing.id}/approve`, {});
+      toast.success("Change approved — live across the system now.");
+      setReviewing(null);
+      await loadPending();
+      const data = await api.get<{
+        products: Product[];
+        pendingProductIds?: string[];
+      }>("/admin/products");
+      setProducts(data.products ?? []);
+      setPendingProductIds(data.pendingProductIds ?? []);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to approve the change.");
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function handleReject() {
+    if (!reviewing) return;
+    if (rejectReason.trim().length < 3) {
+      toast.error("Give a reason (3+ characters) so the secretary can fix it.");
+      return;
+    }
+    setReviewBusy(true);
+    try {
+      await api.post(`/product-changes/${reviewing.id}/reject`, {
+        reason: rejectReason.trim(),
+      });
+      toast.success("Change rejected — the secretary can see your reason.");
+      setReviewing(null);
+      await loadPending();
+      const data = await api.get<{
+        products: Product[];
+        pendingProductIds?: string[];
+      }>("/admin/products");
+      setProducts(data.products ?? []);
+      setPendingProductIds(data.pendingProductIds ?? []);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reject the change.");
+    } finally {
+      setReviewBusy(false);
     }
   }
 
@@ -263,6 +416,54 @@ export default function ProductsPage() {
           }
         />
 
+        {canApprove && pendingRequests.length > 0 && (
+          <Card className="border-amber-200 bg-amber-50/40">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+                <ClipboardCheck className="h-4 w-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-navy-900">
+                  Awaiting Approval
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Changes submitted from the secretary portal go live only
+                  after you approve them.
+                </p>
+              </div>
+              <Badge tone="amber" className="ml-auto">{pendingRequests.length} pending</Badge>
+            </div>
+            <div className="space-y-2">
+              {pendingRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-100 bg-white px-3 py-2"
+                >
+                  <Badge tone="amber">{REQUEST_TYPE_LABELS[req.type] ?? req.type}</Badge>
+                  <span className="text-sm font-medium text-navy-900">
+                    {req.productName ?? req.proposal?.name ?? "(unknown product)"}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    by {req.requestedBy ?? "secretary"} ·{" "}
+                    {new Date(req.createdAt).toLocaleString()}
+                  </span>
+                  {!req.current && req.type !== "create" && (
+                    <Badge tone="red">Product deleted</Badge>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto"
+                    onClick={() => openReview(req)}
+                  >
+                    Review
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
         <FilterBar
           fields={filterFields}
           values={filters}
@@ -300,9 +501,14 @@ export default function ProductsPage() {
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-100">
                     <Package className="h-5 w-5" />
                   </div>
-                  <Badge tone={product.isActive ? "green" : "slate"} dot>
-                    {product.isActive ? "Active" : "Inactive"}
-                  </Badge>
+                  <div className="flex flex-col items-end gap-1">
+                    <Badge tone={product.isActive ? "green" : "slate"} dot>
+                      {product.isActive ? "Active" : "Inactive"}
+                    </Badge>
+                    {pendingProductIds.includes(product.id) && (
+                      <Badge tone="amber">Pending change</Badge>
+                    )}
+                  </div>
                 </div>
                 <h3 className="mb-1 text-sm font-semibold text-navy-900">
                   {product.name}
@@ -485,6 +691,80 @@ export default function ProductsPage() {
             ))}
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        open={!!reviewing}
+        onClose={() => setReviewing(null)}
+        size="lg"
+        title={
+          reviewing
+            ? `${REQUEST_TYPE_LABELS[reviewing.type] ?? reviewing.type} — ${
+                reviewing.productName ?? reviewing.proposal?.name ?? "product"
+              }`
+            : "Review change"
+        }
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setReviewing(null)}>
+              Close
+            </Button>
+            <Button
+              variant="danger"
+              onClick={handleReject}
+              loading={reviewBusy}
+              disabled={reviewBusy}
+            >
+              Reject
+            </Button>
+            <Button onClick={handleApprove} loading={reviewBusy} disabled={reviewBusy}>
+              Approve & Apply
+            </Button>
+          </>
+        }
+      >
+        {reviewing && (
+          <div className="space-y-4">
+            <p className="text-xs text-slate-500">
+              Requested by {reviewing.requestedBy ?? "secretary"} ·{" "}
+              {new Date(reviewing.createdAt).toLocaleString()}. Approving
+              applies this change to the website catalog, POS and admin views
+              immediately.
+            </p>
+            <div className="overflow-hidden rounded-lg border border-slate-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <th className="px-3 py-2 font-medium">Field</th>
+                    <th className="px-3 py-2 font-medium">Current</th>
+                    <th className="px-3 py-2 font-medium">Proposed</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {requestRows(reviewing).map((row, idx) => (
+                    <tr key={`${row.label}-${idx}`}>
+                      <td className="px-3 py-2 text-slate-500">{row.label}</td>
+                      <td className="px-3 py-2 text-slate-500 line-through decoration-slate-300">
+                        {row.from}
+                      </td>
+                      <td className="px-3 py-2 font-medium text-navy-900">
+                        {row.to}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <Input
+                label="Rejection reason (required to reject)"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="e.g. Price is below our per-kg margin floor."
+              />
+            </div>
+          </div>
+        )}
       </Modal>
     </DashboardLayout>
   );

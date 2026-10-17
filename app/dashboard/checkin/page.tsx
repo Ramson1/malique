@@ -22,6 +22,7 @@ import {
   Select,
   Card,
   PageHeader,
+  ExportMenu,
   SegmentedControl,
   StatTile,
   useToast,
@@ -200,6 +201,7 @@ export default function CheckInTerminalPage() {
           title="Staff Check-in Terminal"
           description="Identity is proven two ways: a physical badge (QR or staff code) and a secret PIN."
           icon={<ScanLine className="w-5 h-5" />}
+          actions={<ExportMenu kind="attendance" />}
         />
 
         <div className="grid gap-6 lg:grid-cols-2">

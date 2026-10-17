@@ -22,6 +22,7 @@ import {
   Modal,
   Card,
   PageHeader,
+  ExportMenu,
   useToast,
 } from "@/components/ui";
 import { api } from "@/lib/api/client";
@@ -229,9 +230,12 @@ export default function DispatchPage() {
           description="Drag a card between columns to change its stage, or use the actions on each card."
           icon={<Send className="w-5 h-5" />}
           actions={
-            <Button variant="outline" size="sm" leftIcon={<RefreshCw className="w-4 h-4" />} onClick={load} loading={loading}>
-              Refresh
-            </Button>
+            <div className="flex items-center gap-2">
+              <ExportMenu kind="deliveries" filters={{ branchId }} />
+              <Button variant="outline" size="sm" leftIcon={<RefreshCw className="w-4 h-4" />} onClick={load} loading={loading}>
+                Refresh
+              </Button>
+            </div>
           }
         />
 

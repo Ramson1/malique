@@ -30,3 +30,13 @@ export {
 } from "./filter-bar";
 export { PageHeader, type PageHeaderProps } from "./page-header";
 export { PrintButton, type PrintButtonProps } from "./print-button";
+export {
+  Skeleton,
+  SkeletonCircle,
+  SkeletonText,
+  SkeletonStatCard,
+  SkeletonStatGrid,
+  SkeletonCard,
+  SkeletonList,
+  SkeletonDetail,
+} from "./skeleton";

@@ -574,10 +574,10 @@ export default function GasPage() {
 
         {/* Balance tiles */}
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatTile icon={<Boxes className="w-5 h-5" />} label="Opening Stock" value={loadingBalance ? "—" : kg(balance?.openingKg ?? 0)} accent="blue" />
-          <StatTile icon={<TrendingUp className="w-5 h-5" />} label="Purchased (In)" value={loadingBalance ? "—" : kg(balance?.purchasesKg ?? 0)} accent="green" />
-          <StatTile icon={<TrendingDown className="w-5 h-5" />} label="Dispensed (Out)" value={loadingBalance ? "—" : kg(balance?.dispensedKg ?? 0)} accent="amber" />
-          <StatTile icon={<Gauge className="w-5 h-5" />} label="Current On-Hand" value={loadingBalance ? "—" : kg(balance?.currentOnHandKg ?? 0)} accent="navy" />
+          <StatTile icon={<Boxes className="w-5 h-5" />} label="Opening Stock" value={kg(balance?.openingKg ?? 0)} accent="blue" loading={loadingBalance} />
+          <StatTile icon={<TrendingUp className="w-5 h-5" />} label="Purchased (In)" value={kg(balance?.purchasesKg ?? 0)} accent="green" loading={loadingBalance} />
+          <StatTile icon={<TrendingDown className="w-5 h-5" />} label="Dispensed (Out)" value={kg(balance?.dispensedKg ?? 0)} accent="amber" loading={loadingBalance} />
+          <StatTile icon={<Gauge className="w-5 h-5" />} label="Current On-Hand" value={kg(balance?.currentOnHandKg ?? 0)} accent="navy" loading={loadingBalance} />
         </div>
 
         {/* Expected vs actual + variance */}

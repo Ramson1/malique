@@ -22,6 +22,7 @@ import {
   Badge,
   Button,
   PageHeader,
+  SkeletonDetail,
   useToast,
 } from "@/components/ui";
 import { api } from "@/lib/api/client";
@@ -172,10 +173,8 @@ export default function OrderDetailPage() {
 
   if (loading) {
     return (
-      <DashboardLayout title="Order Detail" subtitle="Loading…">
-        <div className="flex items-center justify-center p-12">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
-        </div>
+      <DashboardLayout title="Order Detail" subtitle="Fetching order…">
+        <SkeletonDetail />
       </DashboardLayout>
     );
   }

@@ -9,6 +9,8 @@ import {
   PencilLine,
   Building2,
   UserRound,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import {
@@ -131,6 +133,28 @@ export default function BranchesPage() {
     }
   }
 
+  // Soft delete: the branch flips to `inactive` and stays for history.
+  async function handleDelete(branch: Branch) {
+    if (!window.confirm(`Delete "${branch.name}"? It will be marked Inactive; past orders and staff stay linked.`)) return;
+    try {
+      await api.delete(`/admin/branches/${branch.id}`);
+      setBranches((prev) => prev.map((b) => (b.id === branch.id ? { ...b, isActive: false } : b)));
+      toast.success("Branch deleted (archived)");
+    } catch {
+      toast.error("Could not delete branch.");
+    }
+  }
+
+  async function handleRestore(branch: Branch) {
+    try {
+      await api.patch(`/admin/branches/${branch.id}`, { isActive: true });
+      setBranches((prev) => prev.map((b) => (b.id === branch.id ? { ...b, isActive: true } : b)));
+      toast.success("Branch restored");
+    } catch {
+      toast.error("Could not restore branch.");
+    }
+  }
+
   return (
     <DashboardLayout title="Branches" subtitle="Manage your branch locations">
       <div className="space-y-6">
@@ -233,14 +257,37 @@ export default function BranchesPage() {
 
                 <div className="mt-4 border-t border-slate-100 pt-3">
                   {canManage && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openEditModal(branch)}
-                      leftIcon={<PencilLine className="w-3.5 h-3.5" />}
-                    >
-                      Edit Branch
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEditModal(branch)}
+                        leftIcon={<PencilLine className="w-3.5 h-3.5" />}
+                      >
+                        Edit Branch
+                      </Button>
+                      {branch.isActive ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600 hover:bg-red-50"
+                          onClick={() => handleDelete(branch)}
+                          leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                        >
+                          Delete
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-emerald-700 hover:bg-emerald-50"
+                          onClick={() => handleRestore(branch)}
+                          leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
+                        >
+                          Restore
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
               </Card>

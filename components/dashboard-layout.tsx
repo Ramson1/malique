@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   Menu,
   Bell,
+  ClipboardCheck,
   LogOut,
   ChevronDown,
   PanelLeftClose,
@@ -29,6 +30,7 @@ export function DashboardLayout({ children, title, subtitle }: DashboardLayoutPr
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { collapsed, toggle } = useCollapsed();
   const [unread, setUnread] = useState(0);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
   const { user, logout } = useAuth();
   const router = useRouter();
 
@@ -42,6 +44,15 @@ export function DashboardLayout({ children, title, subtitle }: DashboardLayoutPr
         if (alive) setUnread(res?.count ?? 0);
       } catch {
         if (alive) setUnread(0);
+      }
+      // Secretary-submitted product changes waiting for review. Endpoint
+      // scopes the count to the queue for admins and to own requests for
+      // other roles; silently 0 when unavailable.
+      try {
+        const res = await api.get<{ count: number }>("/product-changes/pending-count");
+        if (alive) setPendingApprovals(res?.count ?? 0);
+      } catch {
+        if (alive) setPendingApprovals(0);
       }
     }
     load();
@@ -105,6 +116,21 @@ export function DashboardLayout({ children, title, subtitle }: DashboardLayoutPr
           <div className="flex items-center gap-2">
             {/* Print current page (visible on screen, hidden when printing) */}
             <PrintButton className="hidden sm:inline-flex no-print" />
+
+            {/* Pending product-change approvals */}
+            <Link
+              href="/dashboard/products"
+              className="relative p-2 rounded-lg hover:bg-slate-100 transition-colors"
+              aria-label="Pending approvals"
+              title="Product changes awaiting approval"
+            >
+              <ClipboardCheck className="w-5 h-5 text-slate-500" />
+              {pendingApprovals > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center ring-2 ring-white">
+                  {pendingApprovals > 9 ? "9+" : pendingApprovals}
+                </span>
+              )}
+            </Link>
 
             {/* Notifications */}
             <Link

@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Eye, ShoppingCart, CheckCircle2, Truck, Cog } from "lucide-react";
+import { Eye, ShoppingCart, CheckCircle2, Truck, Cog, Plus, Trash2 } from "lucide-react";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import {
   Badge,
@@ -14,9 +14,13 @@ import {
   type Column,
   type FilterField,
   ExportMenu,
+  Input,
+  Select,
+  Modal,
 } from "@/components/ui";
 import { api } from "@/lib/api/client";
 import { downloadReport } from "@/lib/export";
+import { useCan } from "@/lib/auth-context";
 
 interface Order {
   id: string;
@@ -68,6 +72,21 @@ function formatDate(dateStr: string): string {
   });
 }
 
+// Counter-sale payment channels, matching POS_PAYMENT_METHODS on the server.
+const PAYMENT_METHODS = [
+  { value: "cash", label: "Cash" },
+  { value: "transfer", label: "Bank Transfer" },
+  { value: "pos", label: "Card Terminal (POS)" },
+];
+
+type OrderLine = { productId: string; sizeKg: string; quantity: string };
+
+interface ProductLite {
+  id: string;
+  name: string;
+  sizes: number[];
+}
+
 function OrdersInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -82,6 +101,90 @@ function OrdersInner() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // New order (manual counter sale) state — mirrors @Roles on POST /admin/orders.
+  const canCreate = useCan("super_admin", "admin", "branch_manager", "staff");
+  const [showOrder, setShowOrder] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [products, setProducts] = useState<ProductLite[]>([]);
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
+  const [orderForm, setOrderForm] = useState({
+    branchId: "",
+    customerName: "",
+    customerPhone: "",
+    paymentMethod: "cash",
+  });
+  const [lines, setLines] = useState<OrderLine[]>([{ productId: "", sizeKg: "", quantity: "1" }]);
+
+  useEffect(() => {
+    if (!canCreate) return;
+    api
+      .get<{ products: ProductLite[] }>("/admin/products")
+      .then((d) =>
+        setProducts((d.products ?? []).filter((p) => p.sizes?.length).map((p) => ({ id: p.id, name: p.name, sizes: p.sizes }))),
+      )
+      .catch(() => setProducts([]));
+    api
+      .get<{ branches: { id: string; name: string }[] }>("/admin/branches")
+      .then((d) => setBranches(d.branches ?? []))
+      .catch(() => setBranches([]));
+  }, [canCreate]);
+
+  function openNewOrder() {
+    setOrderForm({ branchId: "", customerName: "", customerPhone: "", paymentMethod: "cash" });
+    setLines([{ productId: "", sizeKg: "", quantity: "1" }]);
+    setShowOrder(true);
+  }
+
+  function updateLine(index: number, patch: Partial<OrderLine>) {
+    setLines((prev) => prev.map((l, i) => (i === index ? { ...l, ...patch } : l)));
+  }
+
+  function addLine() {
+    setLines((prev) => [...prev, { productId: "", sizeKg: "", quantity: "1" }]);
+  }
+
+  function removeLine(index: number) {
+    setLines((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
+  }
+
+  async function handleCreateOrder(e: React.FormEvent) {
+    e.preventDefault();
+    const items = lines
+      .filter((l) => l.productId && l.sizeKg)
+      .map((l) => ({
+        productId: l.productId,
+        sizeKg: Number(l.sizeKg),
+        quantity: Math.max(1, Number(l.quantity) || 1),
+      }));
+    if (!orderForm.branchId) {
+      toast.error("Select a branch for this order.");
+      return;
+    }
+    if (items.length === 0) {
+      toast.error("Add at least one product line.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post("/admin/orders", {
+        branchId: orderForm.branchId || undefined,
+        customerName: orderForm.customerName || undefined,
+        customerPhone: orderForm.customerPhone || undefined,
+        paymentMethod: orderForm.paymentMethod,
+        items,
+      });
+      toast.success("Order created");
+      setShowOrder(false);
+      setCurrentPage(1);
+      await fetchOrders();
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to create order. Check stock levels and try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
 
   const fetchOrders = useCallback(async () => {
     setLoading(true);
@@ -209,6 +312,13 @@ function OrdersInner() {
           title="Orders"
           description="Every order captured across your branches, from pending to delivered."
           icon={<ShoppingCart className="w-5 h-5" />}
+          actions={
+            canCreate ? (
+              <Button onClick={openNewOrder} leftIcon={<Plus className="w-4 h-4" />}>
+                New Order
+              </Button>
+            ) : undefined
+          }
         />
 
         <FilterBar
@@ -330,6 +440,141 @@ function OrdersInner() {
           </div>
         )}
       </div>
+
+      <Modal
+        open={showOrder}
+        onClose={() => setShowOrder(false)}
+        title="New Order"
+        description="Record a counter/phone order for a customer. Stock is deducted from the selected branch."
+        size="lg"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setShowOrder(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" form="new-order-form" loading={saving}>
+              Create Order
+            </Button>
+          </>
+        }
+      >
+        <form id="new-order-form" onSubmit={handleCreateOrder} className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Select
+              label="Branch"
+              value={orderForm.branchId}
+              onChange={(e) => setOrderForm((f) => ({ ...f, branchId: e.target.value }))}
+              required
+            >
+              <option value="">Select branch</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </Select>
+            <Select
+              label="Payment Method"
+              value={orderForm.paymentMethod}
+              onChange={(e) => setOrderForm((f) => ({ ...f, paymentMethod: e.target.value }))}
+              required
+            >
+              {PAYMENT_METHODS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Customer Name (optional)"
+              value={orderForm.customerName}
+              onChange={(e) => setOrderForm((f) => ({ ...f, customerName: e.target.value }))}
+              placeholder="Walk-in or registered name"
+            />
+            <Input
+              label="Customer Phone (optional)"
+              value={orderForm.customerPhone}
+              onChange={(e) => setOrderForm((f) => ({ ...f, customerPhone: e.target.value }))}
+              placeholder="Matches a registered customer if found"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-navy-800">Items</label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={addLine}
+                leftIcon={<Plus className="w-3.5 h-3.5" />}
+              >
+                Add line
+              </Button>
+            </div>
+            {lines.map((line, i) => {
+              const product = products.find((p) => p.id === line.productId);
+              return (
+                <div key={i} className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <Select
+                      label={i === 0 ? "Product" : undefined}
+                      value={line.productId}
+                      onChange={(e) =>
+                        updateLine(i, { productId: e.target.value, sizeKg: "" })
+                      }
+                      required
+                    >
+                      <option value="">Select product</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="w-28">
+                    <Select
+                      label={i === 0 ? "Size" : undefined}
+                      value={line.sizeKg}
+                      onChange={(e) => updateLine(i, { sizeKg: e.target.value })}
+                      disabled={!product}
+                      required
+                    >
+                      <option value="">Size</option>
+                      {(product?.sizes ?? []).map((s) => (
+                        <option key={s} value={String(s)}>
+                          {s}kg
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="w-24">
+                    <Input
+                      label={i === 0 ? "Qty" : undefined}
+                      type="number"
+                      min={1}
+                      value={line.quantity}
+                      onChange={(e) => updateLine(i, { quantity: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => removeLine(i)}
+                    disabled={lines.length === 1}
+                    aria-label="Remove line"
+                  >
+                    <Trash2 className="h-4 w-4 text-red-500" />
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </form>
+      </Modal>
     </DashboardLayout>
   );
 }

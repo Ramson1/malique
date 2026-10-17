@@ -34,6 +34,7 @@ import {
   DataGrid,
   Badge,
   PageHeader,
+  ExportMenu,
   type Column,
 } from "@/components/ui";
 import { api } from "@/lib/api/client";
@@ -187,14 +188,24 @@ export default function DashboardPage() {
           description="Live revenue, orders, staffing and gas accountability across your Rivers State branches."
           icon={<LayoutDashboard className="w-5 h-5" />}
           actions={
-            <Link
-              href="/dashboard/gas"
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-navy-800 to-navy-950 px-4 h-10 text-sm font-semibold text-amber-400 shadow-sm hover:from-navy-800 hover:to-navy-900 transition-all"
-            >
-              <Flame className="w-4 h-4" />
-              Gas Balance
-              <ArrowRight className="w-4 h-4" />
-            </Link>
+            <div className="flex items-center gap-2">
+              <ExportMenu
+                kind="dashboard"
+                filters={{
+                  branchId: filters.branchId,
+                  from: filters.rangeStart,
+                  to: filters.rangeEnd,
+                }}
+              />
+              <Link
+                href="/dashboard/gas"
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-navy-800 to-navy-950 px-4 h-10 text-sm font-semibold text-amber-400 shadow-sm hover:from-navy-800 hover:to-navy-900 transition-all"
+              >
+                <Flame className="w-4 h-4" />
+                Gas Balance
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
           }
         />
 

@@ -18,6 +18,7 @@ import {
   Input,
   Badge,
   PageHeader,
+  SkeletonCard,
   useToast,
 } from "@/components/ui";
 import { api, API_URL } from "@/lib/api/client";
@@ -173,11 +174,10 @@ export default function ProfilePage() {
         />
 
         {loading ? (
-          <Card>
-            <div className="flex items-center justify-center py-12 text-slate-400">
-              <Loader2 className="w-6 h-6 animate-spin" />
-            </div>
-          </Card>
+          <div className="space-y-4">
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
         ) : (
           <>
             {/* Identity */}

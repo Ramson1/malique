@@ -10,6 +10,8 @@ import {
   ArrowUpDown,
   Minus,
   Plus,
+  PencilLine,
+  Trash2,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import {
@@ -28,6 +30,7 @@ import {
   ExportMenu,
 } from "@/components/ui";
 import { api } from "@/lib/api/client";
+import { useCan } from "@/lib/auth-context";
 
 interface InventoryItem {
   id: string;
@@ -58,6 +61,27 @@ const REASONS = [
   { value: "correction", label: "Correction" },
 ];
 
+// Create/edit a branch stock row. `id` present => edit (PATCH thresholds/stock);
+// absent => create a new row (POST). Product/branch/size only settable on create.
+type StockForm = {
+  id?: string;
+  productId: string;
+  branchId: string;
+  sizeKg: string;
+  currentStock: string;
+  minStock: string;
+  maxStock: string;
+};
+
+const emptyStockForm: StockForm = {
+  productId: "",
+  branchId: "",
+  sizeKg: "",
+  currentStock: "0",
+  minStock: "5",
+  maxStock: "500",
+};
+
 function barColor(status: string): string {
   switch (status) {
     case "critical":
@@ -73,6 +97,8 @@ function barColor(status: string): string {
 
 export default function InventoryPage() {
   const toast = useToast();
+  // Mirrors @Roles('super_admin','admin','branch_manager') on inventory writes.
+  const canManage = useCan("super_admin", "admin", "branch_manager");
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<Record<string, string>>({
@@ -84,20 +110,125 @@ export default function InventoryPage() {
   const [adjustQty, setAdjustQty] = useState(0);
   const [adjustReason, setAdjustReason] = useState("");
 
-  useEffect(() => {
-    async function fetchInventory() {
-      try {
-        const data = await api.get<{ inventory: InventoryItem[] }>("/admin/inventory");
-        setInventory(data.inventory ?? []);
-      } catch {
-        toast.error("Could not load inventory. Please retry.");
-      } finally {
-        setLoading(false);
-      }
+  // Create/edit stock-row state + catalog options for the create form.
+  const [stockOpen, setStockOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [stockForm, setStockForm] = useState<StockForm>(emptyStockForm);
+  const [productOptions, setProductOptions] = useState<
+    { id: string; name: string; sizes: number[] }[]
+  >([]);
+  const [branchOptions2, setBranchOptions2] = useState<{ id: string; name: string }[]>([]);
+
+  async function fetchInventory() {
+    try {
+      const data = await api.get<{ inventory: InventoryItem[] }>("/admin/inventory");
+      setInventory(data.inventory ?? []);
+    } catch {
+      toast.error("Could not load inventory. Please retry.");
+    } finally {
+      setLoading(false);
     }
+  }
+
+  useEffect(() => {
     fetchInventory();
+    api
+      .get<{ products: { id: string; name: string; sizes: number[] }[] }>("/admin/products")
+      .then((d) =>
+        setProductOptions(
+          (d.products ?? [])
+            .filter((p) => (p.sizes?.length ?? 0) > 0)
+            .map((p) => ({ id: p.id, name: p.name, sizes: p.sizes })),
+        ),
+      )
+      .catch(() => setProductOptions([]));
+    api
+      .get<{ branches: { id: string; name: string }[] }>("/admin/branches")
+      .then((d) => setBranchOptions2(d.branches ?? []))
+      .catch(() => setBranchOptions2([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function openAddStock() {
+    setEditingId(null);
+    setStockForm(emptyStockForm);
+    setStockOpen(true);
+  }
+
+  function openEditStock(item: InventoryItem) {
+    setEditingId(item.id);
+    setStockForm({
+      currentStock: String(item.currentStock),
+      minStock: String(item.minStock),
+      maxStock: String(item.maxStock),
+      productId: "",
+      branchId: item.branchId,
+      sizeKg: "",
+    });
+    setStockOpen(true);
+  }
+
+  async function handleSaveStock(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (editingId) {
+        const updated = await api.patch<{
+          currentStock: number;
+          minStock: number;
+          maxStock: number;
+          status: string;
+        }>(`/admin/inventory/items/${editingId}`, {
+          currentStock: Number(stockForm.currentStock) || 0,
+          minStockLevel: Number(stockForm.minStock) || 0,
+          maxCapacity: Number(stockForm.maxStock) || 1,
+        });
+        setInventory((prev) =>
+          prev.map((i) =>
+            i.id === editingId
+              ? {
+                  ...i,
+                  currentStock: updated.currentStock,
+                  minStock: updated.minStock,
+                  maxStock: updated.maxStock,
+                  status: updated.status,
+                }
+              : i,
+          ),
+        );
+        toast.success("Stock row updated");
+      } else {
+        await api.post("/admin/inventory/items", {
+          productId: stockForm.productId,
+          branchId: stockForm.branchId,
+          sizeKg: Number(stockForm.sizeKg) || 0,
+          quantityOnHand: Number(stockForm.currentStock) || 0,
+          minStockLevel: Number(stockForm.minStock) || 0,
+          maxCapacity: Number(stockForm.maxStock) || 1,
+        });
+        toast.success("Stock row added");
+        await fetchInventory();
+      }
+      setStockOpen(false);
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to save stock row.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteStock(item: InventoryItem) {
+    if (!window.confirm(`Delete ${item.productName} stock at ${item.branchName}?`)) return;
+    try {
+      await api.delete(`/admin/inventory/items/${item.id}`);
+      setInventory((prev) => prev.filter((i) => i.id !== item.id));
+      toast.success("Stock row deleted");
+    } catch (err: any) {
+      toast.error(err?.message || "Could not delete stock row.");
+    }
+  }
+
 
   const branchOptions = useMemo(
     () =>
@@ -234,6 +365,13 @@ export default function InventoryPage() {
           title="Inventory Overview"
           description="Live stock levels and restock health across your Rivers State branches."
           icon={<Boxes className="w-5 h-5" />}
+          actions={
+            canManage ? (
+              <Button onClick={openAddStock} leftIcon={<Plus className="w-4 h-4" />}>
+                Add Stock
+              </Button>
+            ) : undefined
+          }
         />
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -287,18 +425,40 @@ export default function InventoryPage() {
           emptyTitle="No stock items found"
           emptyHint="Adjust your filters, or add inventory to your branches."
           rowActions={(item) => (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setAdjustModal(item);
-                setAdjustQty(0);
-                setAdjustReason("");
-              }}
-              leftIcon={<ArrowUpDown className="w-3.5 h-3.5" />}
-            >
-              Adjust
-            </Button>
+            <div className="inline-flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setAdjustModal(item);
+                  setAdjustQty(0);
+                  setAdjustReason("");
+                }}
+                leftIcon={<ArrowUpDown className="w-3.5 h-3.5" />}
+              >
+                Adjust
+              </Button>
+              {canManage && (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => openEditStock(item)}
+                    aria-label="Edit stock"
+                  >
+                    <PencilLine className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDeleteStock(item)}
+                    aria-label="Delete stock row"
+                  >
+                    <Trash2 className="h-4 w-4 text-red-500" />
+                  </Button>
+                </>
+              )}
+            </div>
           )}
         />
       </div>
@@ -382,6 +542,106 @@ export default function InventoryPage() {
             </Select>
           </form>
         )}
+      </Modal>
+
+      <Modal
+        open={stockOpen}
+        onClose={() => setStockOpen(false)}
+        title={editingId ? "Edit Stock Row" : "Add Stock Row"}
+        description={
+          editingId
+            ? "Update the on-hand quantity or restock thresholds for this branch."
+            : "Create a new branch stock record for a product size."
+        }
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setStockOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" form="stock-form" loading={saving}>
+              {editingId ? "Save Changes" : "Add Stock"}
+            </Button>
+          </>
+        }
+      >
+        <form id="stock-form" onSubmit={handleSaveStock} className="space-y-4">
+          {!editingId && (
+            <>
+              <Select
+                label="Product"
+                value={stockForm.productId}
+                onChange={(e) =>
+                  setStockForm((f) => ({ ...f, productId: e.target.value, sizeKg: "" }))
+                }
+                required
+              >
+                <option value="">Select product</option>
+                {productOptions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </Select>
+              <Select
+                label="Branch"
+                value={stockForm.branchId}
+                onChange={(e) => setStockForm((f) => ({ ...f, branchId: e.target.value }))}
+                required
+              >
+                <option value="">Select branch</option>
+                {branchOptions2.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </Select>
+              <Select
+                label="Cylinder Size"
+                value={stockForm.sizeKg}
+                onChange={(e) => setStockForm((f) => ({ ...f, sizeKg: e.target.value }))}
+                required
+                disabled={!stockForm.productId}
+              >
+                <option value="">
+                  {stockForm.productId ? "Select size" : "Pick a product first"}
+                </option>
+                {(productOptions.find((p) => p.id === stockForm.productId)?.sizes ?? []).map(
+                  (s) => (
+                    <option key={s} value={String(s)}>
+                      {s}kg
+                    </option>
+                  ),
+                )}
+              </Select>
+            </>
+          )}
+          <Input
+            label={editingId ? "Current Stock" : "Initial Stock"}
+            type="number"
+            min={0}
+            value={stockForm.currentStock}
+            onChange={(e) => setStockForm((f) => ({ ...f, currentStock: e.target.value }))}
+            required
+          />
+          <div className="grid grid-cols-2 gap-3">
+            <Input
+              label="Min Stock Level"
+              type="number"
+              min={0}
+              value={stockForm.minStock}
+              onChange={(e) => setStockForm((f) => ({ ...f, minStock: e.target.value }))}
+              required
+            />
+            <Input
+              label="Max Capacity"
+              type="number"
+              min={1}
+              value={stockForm.maxStock}
+              onChange={(e) => setStockForm((f) => ({ ...f, maxStock: e.target.value }))}
+              required
+            />
+          </div>
+        </form>
       </Modal>
     </DashboardLayout>
   );

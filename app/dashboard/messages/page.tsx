@@ -21,6 +21,7 @@ import {
   Drawer,
   PageHeader,
   SegmentedControl,
+  SkeletonList,
   useToast,
   ExportMenu,
 } from "@/components/ui";
@@ -156,7 +157,9 @@ export default function MessagesPage() {
 
         <Card padded={false}>
           {loading ? (
-            <p className="py-16 text-center text-sm text-slate-400">Loading…</p>
+            <div className="p-6">
+              <SkeletonList rows={5} />
+            </div>
           ) : messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">

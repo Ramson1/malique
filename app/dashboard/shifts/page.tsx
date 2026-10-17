@@ -21,6 +21,8 @@ import {
   Modal,
   Card,
   PageHeader,
+  ExportMenu,
+  SkeletonList,
   useToast,
 } from "@/components/ui";
 import { api } from "@/lib/api/client";
@@ -284,6 +286,14 @@ export default function ShiftsPage() {
           icon={<CalendarDays className="w-5 h-5" />}
           actions={
             <div className="flex gap-2">
+              <ExportMenu
+                kind="shifts"
+                filters={{
+                  branchId,
+                  from: days[0]?.toISOString(),
+                  to: days[6]?.toISOString(),
+                }}
+              />
               <Button variant="outline" size="sm" leftIcon={<Printer className="w-4 h-4" />} onClick={() => window.print()}>
                 Print
               </Button>
@@ -420,7 +430,7 @@ export default function ShiftsPage() {
             </table>
           </div>
         )}
-        {loading && <p className="text-center text-xs text-slate-400">Loading roster…</p>}
+        {loading && <SkeletonList rows={4} />}
       </div>
 
       {/* Shift add/edit modal */}

@@ -8,19 +8,27 @@ import {
   Mail,
   MapPin,
   ShoppingCart,
+  Plus,
+  PencilLine,
+  Trash2,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import {
   Card,
   Button,
+  Input,
+  Select,
+  Modal,
   DataGrid,
   FilterBar,
   PageHeader,
+  useToast,
   type Column,
   type FilterField,
   ExportMenu,
 } from "@/components/ui";
 import { api } from "@/lib/api/client";
+import { useCan } from "@/lib/auth-context";
 
 interface Customer {
   id: string;
@@ -34,6 +42,26 @@ interface Customer {
   lastOrderDate: string;
   createdAt: string;
 }
+
+type CustomerForm = {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  address: string;
+  defaultBranchId: string;
+  password: string;
+};
+
+const emptyForm: CustomerForm = {
+  firstName: "",
+  lastName: "",
+  email: "",
+  phone: "",
+  address: "",
+  defaultBranchId: "",
+  password: "",
+};
 
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat("en-NG", {
@@ -56,10 +84,19 @@ function initials(c: { firstName: string; lastName: string }) {
 }
 
 export default function CustomersPage() {
+  const toast = useToast();
+  // Mirrors @Roles on the admin customers BFF writes.
+  const canManage = useCan("super_admin", "admin", "branch_manager");
+  const canDelete = useCan("super_admin", "admin");
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Customer | null>(null);
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState<Customer | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<CustomerForm>(emptyForm);
 
   useEffect(() => {
     async function fetchCustomers() {
@@ -73,7 +110,70 @@ export default function CustomersPage() {
       }
     }
     fetchCustomers();
+    api
+      .get<{ branches: { id: string; name: string }[] }>("/admin/branches")
+      .then((d) => setBranches(d.branches ?? []))
+      .catch(() => setBranches([]));
   }, []);
+
+  function openAddModal() {
+    setEditing(null);
+    setForm(emptyForm);
+    setShowModal(true);
+  }
+
+  function openEditModal(c: Customer) {
+    setEditing(c);
+    setForm({
+      firstName: c.firstName,
+      lastName: c.lastName,
+      email: c.email,
+      phone: c.phone,
+      address: c.address ?? "",
+      defaultBranchId: (c as Customer & { defaultBranchId?: string }).defaultBranchId ?? "",
+      password: "",
+    });
+    setShowModal(true);
+  }
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (editing) {
+        const updated = await api.patch<Customer>(`/admin/customers/${editing.id}`, form);
+        setCustomers((prev) =>
+          prev.map((c) => (c.id === editing.id ? { ...c, ...updated } : c)),
+        );
+        setSelected((prev) => (prev && prev.id === editing.id ? { ...prev, ...updated } : prev));
+        toast.success("Customer updated");
+      } else {
+        const created = await api.post<Customer>("/admin/customers", form);
+        setCustomers((prev) => [
+          { ...created, totalOrders: 0, totalSpent: 0, lastOrderDate: created.createdAt, address: "" },
+          ...prev,
+        ]);
+        toast.success("Customer added");
+      }
+      setShowModal(false);
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to save customer.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(c: Customer) {
+    if (!window.confirm(`Delete ${c.firstName} ${c.lastName}? Their past orders stay intact.`)) return;
+    try {
+      await api.delete(`/admin/customers/${c.id}`);
+      setCustomers((prev) => prev.filter((x) => x.id !== c.id));
+      setSelected((prev) => (prev?.id === c.id ? null : prev));
+      toast.success("Customer deleted");
+    } catch (err: any) {
+      toast.error(err?.message || "Could not delete customer.");
+    }
+  }
 
   const filtered = useMemo(
     () =>
@@ -148,6 +248,13 @@ export default function CustomersPage() {
           title="Customers"
           description="Everyone who has ordered from Malique, with lifetime value at a glance."
           icon={<Users className="w-5 h-5" />}
+          actions={
+            canManage && (
+              <Button onClick={openAddModal} leftIcon={<Plus className="w-4 h-4" />}>
+                Add Customer
+              </Button>
+            )
+          }
         />
 
         <FilterBar
@@ -169,6 +276,32 @@ export default function CustomersPage() {
               onRowClick={(c) => setSelected(c)}
               emptyTitle="No customers yet"
               emptyHint="Customers appear here automatically once they place their first order."
+              rowActions={
+                canManage
+                  ? (c) => (
+                      <div className="inline-flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => openEditModal(c)}
+                          aria-label="Edit customer"
+                        >
+                          <PencilLine className="h-4 w-4" />
+                        </Button>
+                        {canDelete && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDelete(c)}
+                            aria-label="Delete customer"
+                          >
+                            <Trash2 className="h-4 w-4 text-red-500" />
+                          </Button>
+                        )}
+                      </div>
+                    )
+                  : undefined
+              }
             />
           </div>
 
@@ -236,6 +369,92 @@ export default function CustomersPage() {
           </div>
         </div>
       </div>
+
+      <Modal
+        open={showModal}
+        onClose={() => setShowModal(false)}
+        title={editing ? "Edit Customer" : "Add Customer"}
+        description={
+          editing
+            ? `${editing.firstName} ${editing.lastName}`
+            : "Register a customer so phone and counter sales link to their profile."
+        }
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setShowModal(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" form="customer-form" loading={saving} disabled={saving}>
+              {editing ? "Update Customer" : "Add Customer"}
+            </Button>
+          </>
+        }
+      >
+        <form id="customer-form" onSubmit={handleSave} className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="First Name"
+              name="firstName"
+              value={form.firstName}
+              onChange={(e) => setForm({ ...form, firstName: e.target.value })}
+              required
+            />
+            <Input
+              label="Last Name"
+              name="lastName"
+              value={form.lastName}
+              onChange={(e) => setForm({ ...form, lastName: e.target.value })}
+              required
+            />
+          </div>
+          <Input
+            label="Email"
+            name="email"
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            required
+          />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="Phone"
+              name="phone"
+              type="tel"
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              required
+            />
+            <Select
+              label="Default Branch"
+              name="defaultBranchId"
+              value={form.defaultBranchId}
+              onChange={(e) => setForm({ ...form, defaultBranchId: e.target.value })}
+            >
+              <option value="">No default branch</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <Input
+            label="Address"
+            name="address"
+            value={form.address}
+            onChange={(e) => setForm({ ...form, address: e.target.value })}
+            placeholder="Delivery address (optional)"
+          />
+          <Input
+            label={editing ? "New Password (leave blank to keep current)" : "Password (optional)"}
+            name="password"
+            type="password"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            placeholder={editing ? "Unchanged" : "Blank generates a reset-able temporary one"}
+          />
+        </form>
+      </Modal>
     </DashboardLayout>
   );
 }
